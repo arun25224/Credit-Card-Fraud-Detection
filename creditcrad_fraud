@@ -1,0 +1,133 @@
+# Upload CSV file
+from google.colab import files
+
+print("Please upload your 'credit_card_fraud_10k.csv' file:")
+uploaded = files.upload()
+
+# CART Model, Visuals (Non-Overlapping), Feature Importances, and Business Rules
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeClassifier, plot_tree, _tree
+from sklearn.metrics import confusion_matrix, roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
+
+# LOAD AND PREPARE DATA
+df = pd.read_csv('credit_card_fraud_10k.csv')
+
+# Drop transaction_id 
+df_clean = df.drop(columns=['transaction_id'])
+# Encode the categorical 'merchant_category' column
+df_clean = pd.get_dummies(df_clean, columns=['merchant_category'], drop_first=True)
+
+X = df_clean.drop(columns=['is_fraud'])
+y = df_clean['is_fraud']
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+
+# TRAIN CART MODEL
+# DecisionTreeClassifier(max_depth=4, class_weight='balanced')
+dt_model = DecisionTreeClassifier(max_depth=4, random_state=42, class_weight='balanced')
+dt_model.fit(X_train, y_train)
+
+# DECISION TREE (RED/GREEN - NON-OVERLAPPING)
+# Visualise tree, colour code nodes: red = high fraud risk, green = low risk.
+# Fontsize 12 to completely prevent overlapping boxes
+fig, ax = plt.subplots(figsize=(40, 20))
+tree_plot = plot_tree(dt_model,
+                      feature_names=X.columns,
+                      class_names=['Low Risk', 'High Risk'],
+                      filled=True,
+                      rounded=True,
+                      fontsize=12,
+                      ax=ax)
+
+
+for node in tree_plot:
+    text = node.get_text()
+    if 'class = High Risk' in text:
+        node.get_bbox_patch().set_facecolor('#ffcdd2') # Light Red for High Risk
+    elif 'class = Low Risk' in text:
+        node.get_bbox_patch().set_facecolor('#c8e6c9') # Light Green for Low Risk
+
+plt.title("CART Decision Tree Structure for Fraud Detection (Red = High Risk, Green = Low Risk)", fontsize=24)
+plt.tight_layout()
+plt.savefig('decision_tree_red_green_clean.png', dpi=300, bbox_inches='tight') # bbox_inches='tight' trims empty margins
+plt.show()
+print("(Clean, non-overlapping tree diagram saved as 'decision_tree_red_green_clean.png' in Colab files)\n")
+
+
+
+# Feature importances and Bar chart
+importances = dt_model.feature_importances_
+indices = np.argsort(importances)
+
+plt.figure(figsize=(10, 6))
+plt.title('Feature Importances for Fraud Detection (CART)', fontsize=14)
+plt.barh(range(len(indices)), importances[indices], color='steelblue', align='center')
+plt.yticks(range(len(indices)), [X.columns[i] for i in indices])
+plt.xlabel('Relative Importance')
+plt.tight_layout()
+plt.savefig('feature_importances.png', dpi=300)
+plt.show()
+print("(Feature importances chart saved as 'feature_importances.png' in Colab files)\n")
+
+
+
+# Evaluation for Accuracy, Precision, Recall, F1, AUC-ROC
+y_pred = dt_model.predict(X_test)
+y_pred_proba = dt_model.predict_proba(X_test)[:, 1]
+
+print("="*60)
+print(" METRICS FOR SECTION 6.3 (MODEL COMPARISON TABLE)")
+print("="*60)
+print(f"Accuracy:  {accuracy_score(y_test, y_pred):.4f}")
+print(f"Precision: {precision_score(y_test, y_pred):.4f}")
+print(f"Recall:    {recall_score(y_test, y_pred):.4f}  <-- Prioritize this for fraud!")
+print(f"F1 Score:  {f1_score(y_test, y_pred):.4f}")
+print(f"AUC-ROC:   {roc_auc_score(y_test, y_pred_proba):.4f}")
+print("="*60, "\n")
+
+# TOP 3 BUSINESS SCENARIOS
+def get_top_fraud_rules(tree_model, feature_names, top_n=3):
+    tree_ = tree_model.tree_
+    feature_name = [
+        feature_names[i] if i != _tree.TREE_UNDEFINED else "undefined!"
+        for i in tree_.feature
+    ]
+    paths = []
+
+    def recurse(node, path):
+        if tree_.feature[node] != _tree.TREE_UNDEFINED:
+            name = feature_name[node]
+            threshold = tree_.threshold[node]
+            # Left child
+            recurse(tree_.children_left[node], path + [f"{name} <= {threshold:.2f}"])
+            # Right child
+            recurse(tree_.children_right[node], path + [f"{name} > {threshold:.2f}"])
+        else:
+            # Leaf node reached
+            samples = tree_.n_node_samples[node]
+            values = tree_.value[node][0]
+            fraud_prob = values[1] / sum(values) # Probability of class 1 (Fraud)
+            paths.append((path, fraud_prob, samples))
+
+    recurse(0, [])
+
+    # Sort paths by highest fraud probability, then by most samples affected
+    paths.sort(key=lambda x: (x[1], x[2]), reverse=True)
+
+    print("="*60)
+    print(f" TOP {top_n} BUSINESS RULES FOR REPORT SECTION 6.2")
+    print("="*60)
+    for i in range(min(top_n, len(paths))):
+        rule_conditions = paths[i][0]
+        prob = paths[i][1] * 100
+
+  
+        rule_str = " AND ".join(rule_conditions)
+        print(f"Rule {i+1}: IF {rule_str}")
+        print(f"         --> THEN flag as fraud ({prob:.1f}% probability of fraud)\n")
+
+get_top_fraud_rules(dt_model, X.columns)
